@@ -5,6 +5,7 @@ import { exec } from 'child_process';
 import got from 'got';
 import jsdom from 'jsdom';
 import yargs from 'yargs';
+import puppeteer from 'puppeteer';
 import { hideBin } from 'yargs/helpers';
 import {CookieJar} from 'tough-cookie';
 
@@ -132,53 +133,53 @@ async function generatePdf(list, filename, cookie) {
   });
 }
 
-async function requestPage(url) {
-  await got(url, {...gotOptions, cookieJar}).then(resp => {
-    const dom = new JSDOM(resp.body);
-    const nextLinkEl = dom.window.document.querySelector(argv.selector || '.pagination-nav__link--next');
-    const nextLink = nextLinkEl && `${baseUrl}${nextLinkEl.href}`;
-    const cycle = buffer.has(nextLink);
+async function requestPageWithPuppeteer(url) {
+  console.log(`Fetching page with Puppeteer: ${url}`);
 
-    if (!cycle && nextLink) {
-      console.log(`Got link: ${nextLink}`);
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+  await page.goto(url, {waitUntil: 'networkidle0'}); // Ensures the page is fully loaded
+  const content = await page.content(); // Gets HTML content of the page
+  // The rest of the function remains largely the same, but uses `content` instead of making an HTTP request
+  const dom = new JSDOM(content);
+  // ... process the DOM as before
+  const nextLinkEl = dom.window.document.querySelector(argv.selector || '.pagination-nav__link--next');
 
-      buffer.add(nextLink);
-      requestPage(nextLink);
-    } else {
-      if (cycle) {
-        console.log(`Pagination cycle detected on ${url}`);
-      } else {
-        console.log('No next link found!');
-      }
+  if (nextLinkEl) {
+    const nextLink = `${baseUrl}${nextLinkEl.href}`;
+    console.log(`Got link: ${nextLink}`);
 
-      if (argv.append) {
-        argv.append.split(',').map(item => {
-          const url = item.match(/^https?:\/\//) ? item : `${baseUrl}${scope}${item}`;
-          buffer.add(url);
-          console.log(`Got link: ${url} [append]`);
-        });
-      }
+    buffer.add(nextLink);
+    requestPageWithPuppeteer(nextLink);
+  } else {
+    console.log('No next link found!');
 
-      if (buffer.size > 0) {
-        fs.writeFile(listFile, [...buffer].join('\n'), async err => {
-          console.log(`Writing buffer (${buffer.size} links) to ${listFile}`);
-
-          if (err) {
-            console.error(err);
-            return;
-          }
-
-          if (!argv.listOnly) {
-            generatePdf(listFile, pdfFile, argv.cookie);
-          }
-        });
-      } else {
-        console.log('No buffer to write!');
-      }
+    if (argv.append) {
+      argv.append.split(',').map(item => {
+        const url = item.match(/^https?:\/\//) ? item : `${baseUrl}${scope}${item}`;
+        buffer.add(url);
+        console.log(`Got link: ${url} [append]`);
+      });
     }
-  }).catch(err => {
-    throw new Error(err);
-  });
+
+    if (buffer.size > 0) {
+      fs.writeFile(listFile, [...buffer].join('\n'), async err => {
+        console.log(`Writing buffer (${buffer.size} links) to ${listFile}`);
+
+        if (err) {
+          console.error(err);
+          return;
+        }
+
+        if (!argv.listOnly) {
+          generatePdf(listFile, pdfFile, argv.cookie);
+        }
+      });
+    } else {
+      console.log('No buffer to write!');
+    }
+  }
+  await browser.close();
 }
 
 !fs.existsSync(dest) && fs.mkdirSync(dest);
@@ -200,5 +201,5 @@ if (argv.pdfOnly) {
     buffer.add(`${baseUrl}${scope}`);
   }
 
-  requestPage(`${baseUrl}${scope}`);
+  requestPageWithPuppeteer(`${baseUrl}${scope}`);
 }
